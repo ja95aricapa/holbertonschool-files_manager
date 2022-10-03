@@ -1,35 +1,51 @@
+import sha1 from 'sha1';
+import Queue from 'bull';
+import { ObjectId } from 'mongodb';
 import dbClient from '../utils/db';
+import getIdAndKey from '../utils/users';
 
-const SHA1 = require('sha1');
-const { v4: uuidv4 } = require('uuid');
+const userQ = new Queue('userQ');
 
 class UsersController {
   static async postNew(req, res) {
-    const id = uuidv4();
+    const { email, password } = req.body;
 
-    if (!("email" in req.body)) {
-      return res.status(400).send({error: 'Missing email'});
-    }
+    if (!email) return res.status(400).send({ error: 'Missing email' });
+    if (!password) return res.status(400).send({ error: 'Missing password' });
+    const emailExists = await dbClient.users.findOne({ email });
+    if (emailExists) return res.status(400).send({ error: 'Already exist' });
 
-    if (!("password" in req.body)) {
-      return res.status(400).send({error: 'Missing password'});
-    }
+    const secPass = sha1(password);
 
-    const db = await dbClient.client.collection('users').findOne({email: req.body.email});
-    if (db) {
-      return res.status(400).send('Already exist');
-    }
+    const insertStat = await dbClient.users.insertOne({
+      email,
+      password: secPass,
+    });
 
-    const user = {
-      id,
-      email: req.body.email,
-      password: SHA1(req.body.password), 
+    const createdUser = {
+      id: insertStat.insertedId,
+      email,
     };
 
-    await dbClient.client.collection('users').insertOne(user);
-    return res.status(201).send({id, email: req.body.email});
+    await userQ.add({
+      userId: insertStat.insertedId.toString(),
+    });
+
+    return res.status(201).send(createdUser);
+  }
+
+  static async getMe(req, res) {
+    const { userId } = await getIdAndKey(req);
+
+    const user = await dbClient.users.findOne({ _id: ObjectId(userId) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
+
+    const userInfo = { id: user._id, ...user };
+    delete userInfo._id;
+    delete userInfo.password;
+
+    return res.status(200).send(userInfo);
   }
 }
 
 export default UsersController;
-
